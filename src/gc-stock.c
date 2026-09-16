@@ -1103,8 +1103,15 @@ static void gc_sweep_page(gc_page_profiler_serializer_t *s, jl_gc_pool_t *p, jl_
         goto done;
     }
     // For quick sweep, we might be able to skip the page if the page doesn't
-    // have any young live cell before marking.
-    if (!current_sweep_full && !pg->has_young) {
+    // have any young live cell before marking. A page flagged for weak
+    // processing is never skipped: a promoted (GC_OLD) cancellation source
+    // that died in this young collection must be found and unlinked from its
+    // parents' child lists in this very sweep, which also frees its own young
+    // referents (e.g. its lazily allocated walk lock). Skipping the page would
+    // retain the corpse, still linked, with dangling fields that the next
+    // cancellation walk of the (weak) child list dereferences.
+    if (!current_sweep_full && !pg->has_young &&
+            !jl_atomic_load_relaxed(&pg->has_weak_processing)) {
         assert(!prev_sweep_full || pg->prev_nold >= pg->nold);
         if (!prev_sweep_full || pg->prev_nold == pg->nold) {
             freedall = 0;
@@ -1355,7 +1362,9 @@ static int gc_sweep_prescan(jl_ptls_t ptls, jl_gc_padded_page_stack_t *new_gc_al
             if (!pg->has_marked) {
                 should_scan = 0;
             }
-            if (!current_sweep_full && !pg->has_young) {
+            // mirrors the skip condition in gc_sweep_page
+            if (!current_sweep_full && !pg->has_young &&
+                    !jl_atomic_load_relaxed(&pg->has_weak_processing)) {
                 assert(!prev_sweep_full || pg->prev_nold >= pg->nold);
                 if (!prev_sweep_full || pg->prev_nold == pg->nold) {
                     should_scan = 0;

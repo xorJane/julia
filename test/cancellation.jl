@@ -73,6 +73,29 @@ end
     @test length(kids) == 2 # kept + escaped; the dead child was spliced out
     @test kept in kids && escaped_tok.source in kids
 
+    # a child promoted by a young collection, then given a young referent (its
+    # lazily installed walk lock, allocated by its first walk), then dropped:
+    # the young collection that frees the referent must also unlink the dead
+    # child in the same sweep, even though the child's page saw no young
+    # allocations (the generational sweep would otherwise skip it and leave the
+    # corpse linked with a dangling lock, which the next walk dereferences)
+    @noinline function make_promoted_children(root, n)
+        promoted = [CancellationTokenSource(CancellationToken(root)) for _ in 1:n]
+        GC.gc(false) # promote the (reachable) children
+        foreach(cancel!, promoted) # each child's first walk installs its walk lock
+        return nothing # the children die here
+    end
+    root3 = CancellationTokenSource()
+    kept3 = CancellationTokenSource(CancellationToken(root3))
+    for _ in 1:20
+        make_promoted_children(root3, 200)
+        GC.gc(false) # frees the locks; must unlink the dead children too
+        @test cancel!(root3) # walks whatever is still linked
+        @test live_children(root3) == [kept3]
+        root3 = CancellationTokenSource()
+        kept3 = CancellationTokenSource(CancellationToken(root3))
+    end
+
     # linked sources: a source with several parents is cancelled by any of
     # them (the graph is a DAG, not just a tree)
     la = CancellationTokenSource()
